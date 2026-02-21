@@ -25,4 +25,4 @@ exports.login = async (email, senha) => {
   });
 
   return token;
-}
+};
