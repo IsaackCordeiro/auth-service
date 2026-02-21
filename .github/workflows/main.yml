@@ -1,0 +1,85 @@
+name: CI/CD Pipeline - Auth Service
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  # INTEGRAÇÃO CONTÍNUA (CI)
+  ci:
+    name: Build, Lint and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+
+      - name: Instalar dependências
+        run: npm install
+
+      - name: Análise estática (Linter)
+        run: npm run lint
+
+      - name: Rodar Testes Unitários
+        run: npm test
+
+  # ENTREGA CONTÍNUA (CD)
+  cd-ecr:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    needs: ci
+    
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Credenciais da AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Login no Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, e Push da imagem para o ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: trabalho-final/auth-service
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Constrói a imagem Docker
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          # Etiqueta também como "latest"
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          # Envia as duas versões para a AWS
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+      
+      - name: Preencher o novo ID da imagem no Task Definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: auth-service
+          image: ${{ steps.login-ecr.outputs.registry }}/trabalho-final/auth-service:${{ github.sha }}
+
+      - name: Deploy no Amazon ECS (CodeDeploy Blue/Green)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: auth-service-task-service-hinkluwt
+          cluster: trabalho-final-cluster
+          wait-for-service-stability: true
+          codedeploy-appspec: appspec.yaml
+          codedeploy-application: AppECS-trabalho-final-cluster-auth-service-task-service-hinkluwt
+          codedeploy-deployment-group: DgpECS-trabalho-final-cluster-auth-service-task-service-hinkluwt
